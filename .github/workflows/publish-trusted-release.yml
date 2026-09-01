@@ -1,0 +1,637 @@
+name: Publish trusted release
+
+run-name: Publish source run ${{ inputs.source_run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Numeric Actions run ID from zenyattta/nw-projects
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: trusted-release-publisher
+  cancel-in-progress: false
+
+jobs:
+  reject-untrusted-context:
+    if: >-
+      ${{
+        !(
+          github.event_name == 'workflow_dispatch' &&
+          github.repository == 'zenyattta/nw-projects-releases' &&
+          github.actor == 'zenyattta' &&
+          github.triggering_actor == 'zenyattta' &&
+          github.ref == 'refs/heads/main' &&
+          github.ref_name == 'main' &&
+          github.event.repository.default_branch == 'main' &&
+          github.run_attempt == 1 &&
+          github.workflow_ref == 'zenyattta/nw-projects-releases/.github/workflows/publish-trusted-release.yml@refs/heads/main'
+        )
+      }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Reject untrusted invocation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          throw 'Untrusted publisher invocation: repository, actor, triggering actor, event, default branch/ref, workflow ref, and first-attempt checks must all match.'
+
+  authorize-context:
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' &&
+        github.repository == 'zenyattta/nw-projects-releases' &&
+        github.actor == 'zenyattta' &&
+        github.triggering_actor == 'zenyattta' &&
+        github.ref == 'refs/heads/main' &&
+        github.ref_name == 'main' &&
+        github.event.repository.default_branch == 'main' &&
+        github.run_attempt == 1 &&
+        github.workflow_ref == 'zenyattta/nw-projects-releases/.github/workflows/publish-trusted-release.yml@refs/heads/main'
+      }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Authorize exact publisher context
+        shell: pwsh
+        env:
+          GITHUB_EVENT_REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = [ordered]@{
+            GITHUB_EVENT_NAME = 'workflow_dispatch'
+            GITHUB_REPOSITORY = 'zenyattta/nw-projects-releases'
+            GITHUB_ACTOR = 'zenyattta'
+            GITHUB_TRIGGERING_ACTOR = 'zenyattta'
+            GITHUB_REF = 'refs/heads/main'
+            GITHUB_REF_NAME = 'main'
+            GITHUB_EVENT_REPOSITORY_DEFAULT_BRANCH = 'main'
+            GITHUB_RUN_ATTEMPT = '1'
+            GITHUB_WORKFLOW_REF = 'zenyattta/nw-projects-releases/.github/workflows/publish-trusted-release.yml@refs/heads/main'
+          }
+          foreach ($entry in $expected.GetEnumerator()) {
+            $actual = [Environment]::GetEnvironmentVariable($entry.Key)
+            if ($actual -cne $entry.Value) {
+              throw "Untrusted publisher context: $($entry.Key) did not match."
+            }
+          }
+          if ($env:SOURCE_RUN_ID -cnotmatch '^[1-9][0-9]*$') {
+            throw 'source_run_id must be a positive numeric Actions run ID.'
+          }
+          $parsedRunId = 0L
+          if (-not [Int64]::TryParse($env:SOURCE_RUN_ID, [ref]$parsedRunId)) {
+            throw 'source_run_id exceeds the supported numeric range.'
+          }
+
+  validate-source:
+    needs: authorize-context
+    if: >-
+      ${{
+        needs.authorize-context.result == 'success' &&
+        github.event_name == 'workflow_dispatch' &&
+        github.repository == 'zenyattta/nw-projects-releases' &&
+        github.actor == 'zenyattta' &&
+        github.triggering_actor == 'zenyattta' &&
+        github.ref == 'refs/heads/main' &&
+        github.ref_name == 'main' &&
+        github.event.repository.default_branch == 'main' &&
+        github.run_attempt == 1 &&
+        github.workflow_ref == 'zenyattta/nw-projects-releases/.github/workflows/publish-trusted-release.yml@refs/heads/main'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions: {}
+    outputs:
+      artifact_name: ${{ steps.validate.outputs.artifact_name }}
+      tag: ${{ steps.validate.outputs.tag }}
+      version: ${{ steps.validate.outputs.version }}
+    steps:
+      - name: Validate source run and quarantine release data
+        id: validate
+        shell: pwsh
+        env:
+          GITHUB_EVENT_REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SOURCE_REPO_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          $sourceRepo = 'zenyattta/nw-projects'
+          $apiRoot = 'https://api.github.com'
+          $strictTagPattern = '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          $expectedContext = [ordered]@{
+            GITHUB_EVENT_NAME = 'workflow_dispatch'
+            GITHUB_REPOSITORY = 'zenyattta/nw-projects-releases'
+            GITHUB_ACTOR = 'zenyattta'
+            GITHUB_TRIGGERING_ACTOR = 'zenyattta'
+            GITHUB_REF = 'refs/heads/main'
+            GITHUB_REF_NAME = 'main'
+            GITHUB_EVENT_REPOSITORY_DEFAULT_BRANCH = 'main'
+            GITHUB_RUN_ATTEMPT = '1'
+            GITHUB_WORKFLOW_REF = 'zenyattta/nw-projects-releases/.github/workflows/publish-trusted-release.yml@refs/heads/main'
+          }
+          foreach ($entry in $expectedContext.GetEnumerator()) {
+            $actual = [Environment]::GetEnvironmentVariable($entry.Key)
+            if ($actual -cne $entry.Value) {
+              throw "Untrusted publisher context: $($entry.Key) did not match."
+            }
+          }
+          if ($env:SOURCE_RUN_ID -cnotmatch '^[1-9][0-9]*$') {
+            throw 'source_run_id must be a positive numeric Actions run ID.'
+          }
+          $sourceRunId = 0L
+          if (-not [Int64]::TryParse($env:SOURCE_RUN_ID, [ref]$sourceRunId)) {
+            throw 'source_run_id exceeds the supported numeric range.'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:SOURCE_REPO_TOKEN)) {
+            throw 'SOURCE_REPO_TOKEN is not configured.'
+          }
+
+          $sourceHeaders = @{
+            Accept = 'application/vnd.github+json'
+            Authorization = "Bearer $env:SOURCE_REPO_TOKEN"
+            'X-GitHub-Api-Version' = '2022-11-28'
+            'User-Agent' = 'nw-projects-releases-trusted-publisher'
+          }
+          function Get-SourceJson {
+            param([Parameter(Mandatory)][string]$Path)
+            Invoke-RestMethod -Method Get -Uri "$apiRoot/repos/$sourceRepo/$Path" -Headers $sourceHeaders
+          }
+          function Assert-Exact {
+            param($Actual, $Expected, [Parameter(Mandatory)][string]$Label)
+            if ([string]$Actual -cne [string]$Expected) {
+              throw "$Label did not match the trusted release contract."
+            }
+          }
+
+          $run = Get-SourceJson "actions/runs/$sourceRunId"
+          Assert-Exact $run.id $sourceRunId 'Source run ID'
+          Assert-Exact $run.conclusion 'success' 'Source run conclusion'
+          Assert-Exact $run.event 'push' 'Source run event'
+          Assert-Exact $run.name 'Build Windows release' 'Source workflow name'
+          Assert-Exact $run.path '.github/workflows/release.yml' 'Source workflow path'
+          Assert-Exact $run.repository.full_name $sourceRepo 'Source repository'
+          Assert-Exact $run.head_repository.full_name $sourceRepo 'Source head repository'
+          Assert-Exact $run.actor.login 'zenyattta' 'Source actor'
+          Assert-Exact $run.triggering_actor.login 'zenyattta' 'Source triggering actor'
+          Assert-Exact $run.run_attempt 1 'Source run attempt'
+          if ([string]$run.head_branch -cnotmatch $strictTagPattern) {
+            throw 'Source run head_branch is not a strict vX.Y.Z tag.'
+          }
+          $tag = [string]$run.head_branch
+          $version = $tag.Substring(1)
+          $headSha = [string]$run.head_sha
+          if ($headSha -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'Source run head_sha is not a lowercase commit SHA.'
+          }
+
+          $masterRef = Get-SourceJson 'git/ref/heads/master'
+          Assert-Exact $masterRef.ref 'refs/heads/master' 'Source master ref'
+          Assert-Exact $masterRef.object.type 'commit' 'Source master object type'
+          Assert-Exact $masterRef.object.sha $headSha 'Source master SHA'
+
+          $encodedTag = [Uri]::EscapeDataString($tag)
+          $tagRef = Get-SourceJson "git/ref/tags/$encodedTag"
+          Assert-Exact $tagRef.ref "refs/tags/$tag" 'Source tag ref'
+          Assert-Exact $tagRef.object.type 'tag' 'Source tag ref object type'
+          $tagObject = Get-SourceJson "git/tags/$($tagRef.object.sha)"
+          Assert-Exact $tagObject.tag $tag 'Annotated tag name'
+          Assert-Exact $tagObject.object.type 'commit' 'Annotated tag target type'
+          Assert-Exact $tagObject.object.sha $headSha 'Annotated tag target SHA'
+
+          $matchingAnnotatedTags = @()
+          $sourceTagRefs = @(Get-SourceJson 'git/matching-refs/tags/')
+          foreach ($ref in $sourceTagRefs) {
+            if ([string]$ref.ref -cnotmatch '^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+              continue
+            }
+            if ([string]$ref.object.type -cne 'tag') {
+              continue
+            }
+            $candidateTagObject = Get-SourceJson "git/tags/$($ref.object.sha)"
+            if (
+              [string]$candidateTagObject.object.type -ceq 'commit' -and
+              [string]$candidateTagObject.object.sha -ceq $headSha
+            ) {
+              $candidateName = ([string]$ref.ref).Substring('refs/tags/'.Length)
+              Assert-Exact $candidateTagObject.tag $candidateName 'Enumerated annotated tag name'
+              $matchingAnnotatedTags += $candidateName
+            }
+          }
+          if ($matchingAnnotatedTags.Count -ne 1 -or $matchingAnnotatedTags[0] -cne $tag) {
+            throw 'Exactly one strict SemVer annotated source tag must resolve directly to the source run SHA.'
+          }
+
+          $artifacts = @()
+          $artifactPage = 1
+          do {
+            $artifactResponse = Get-SourceJson "actions/runs/$sourceRunId/artifacts?per_page=100&page=$artifactPage"
+            $artifacts += @($artifactResponse.artifacts)
+            $artifactPage++
+          } while ($artifacts.Count -lt [int]$artifactResponse.total_count)
+          if ($artifacts.Count -ne [int]$artifactResponse.total_count) {
+            throw 'Artifact enumeration count did not match the GitHub API total.'
+          }
+          $expectedArtifactName = "NW-Projects-$version-win-x64"
+          $namedArtifacts = @($artifacts | Where-Object { [string]$_.name -ceq $expectedArtifactName })
+          if ($namedArtifacts.Count -ne 1) {
+            throw 'The source run must have exactly one release artifact with the expected name.'
+          }
+          $artifact = $namedArtifacts[0]
+          Assert-Exact $artifact.workflow_run.id $sourceRunId 'Artifact workflow run ID'
+          Assert-Exact $artifact.workflow_run.head_sha $headSha 'Artifact workflow run SHA'
+          if ([bool]$artifact.expired) {
+            throw 'The source release artifact is expired.'
+          }
+          if ([string]$artifact.digest -cnotmatch '^sha256:[0-9a-f]{64}$') {
+            throw 'The source release artifact is missing a strict SHA-256 API digest.'
+          }
+          $artifactId = 0L
+          if (-not [Int64]::TryParse([string]$artifact.id, [ref]$artifactId) -or $artifactId -le 0) {
+            throw 'The source release artifact ID is invalid.'
+          }
+
+          $zipPath = Join-Path $env:RUNNER_TEMP "source-artifact-$artifactId.zip"
+          $downloadResponse = Invoke-WebRequest `
+            -Method Get `
+            -Uri "$apiRoot/repos/$sourceRepo/actions/artifacts/$artifactId/zip" `
+            -Headers $sourceHeaders `
+            -MaximumRedirection 0 `
+            -SkipHttpErrorCheck
+          if ([int]$downloadResponse.StatusCode -ne 302) {
+            throw "Artifact download request failed with HTTP $([int]$downloadResponse.StatusCode)."
+          }
+          $downloadUri = [Uri]$downloadResponse.Headers.Location
+          if ($downloadUri.Scheme -cne 'https') {
+            throw 'Artifact download redirect did not use HTTPS.'
+          }
+          Invoke-WebRequest `
+            -Method Get `
+            -Uri $downloadUri `
+            -MaximumRedirection 0 `
+            -OutFile $zipPath
+          $actualZipDigest = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expectedZipDigest = ([string]$artifact.digest).Substring('sha256:'.Length)
+          Assert-Exact $actualZipDigest $expectedZipDigest 'Downloaded artifact SHA-256'
+
+          $installerName = "NW-Projects-Setup-$version-win-x64.exe"
+          $portableName = "NW-Projects-$version-win-x64.exe"
+          $expectedReleaseFiles = @($installerName, $portableName, 'SHA256SUMS.txt') | Sort-Object
+          $stagePath = Join-Path $env:RUNNER_TEMP 'validated-release'
+          New-Item -ItemType Directory -Path $stagePath | Out-Null
+
+          $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
+          try {
+            $entries = @($archive.Entries)
+            if ($entries.Count -ne 3) {
+              throw 'The source artifact must contain exactly three files.'
+            }
+            $entryNames = @()
+            foreach ($entry in $entries) {
+              if (
+                [string]::IsNullOrEmpty($entry.Name) -or
+                [string]$entry.FullName -cne [string]$entry.Name -or
+                $entry.FullName.Contains('/') -or
+                $entry.FullName.Contains('\')
+              ) {
+                throw 'The source artifact contains a directory or non-flat path.'
+              }
+              $externalAttributes = [uint32]$entry.ExternalAttributes
+              $unixFileType = ($externalAttributes -shr 16) -band 0xF000
+              if (
+                ($externalAttributes -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                $unixFileType -eq 0xA000
+              ) {
+                throw 'The source artifact contains a reparse point or symbolic link.'
+              }
+              $entryNames += [string]$entry.Name
+            }
+            if (Compare-Object $expectedReleaseFiles ($entryNames | Sort-Object)) {
+              throw 'The source artifact file names do not match the release contract.'
+            }
+            foreach ($entry in $entries) {
+              $destination = Join-Path $stagePath $entry.Name
+              $inputStream = $entry.Open()
+              try {
+                $outputStream = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
+                try {
+                  $inputStream.CopyTo($outputStream)
+                } finally {
+                  $outputStream.Dispose()
+                }
+              } finally {
+                $inputStream.Dispose()
+              }
+            }
+          } finally {
+            $archive.Dispose()
+          }
+          Remove-Item -LiteralPath $zipPath -Force
+
+          $stagedItems = @(Get-ChildItem -LiteralPath $stagePath -Force -Recurse)
+          if ($stagedItems.Count -ne 3 -or @($stagedItems | Where-Object { $_.PSIsContainer }).Count -ne 0) {
+            throw 'Artifact extraction produced an unexpected file or directory.'
+          }
+          foreach ($item in $stagedItems) {
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw 'Artifact extraction produced a reparse point.'
+            }
+          }
+          $stagedNames = @($stagedItems | Select-Object -ExpandProperty Name | Sort-Object)
+          if (Compare-Object $expectedReleaseFiles $stagedNames) {
+            throw 'Extracted release file names do not match the release contract.'
+          }
+
+          $checksumPath = Join-Path $stagePath 'SHA256SUMS.txt'
+          $checksumLines = @([IO.File]::ReadAllLines($checksumPath))
+          if ($checksumLines.Count -ne 2) {
+            throw 'SHA256SUMS.txt must contain exactly two entries.'
+          }
+          $expectedChecksums = @{}
+          foreach ($name in @($installerName, $portableName)) {
+            $escapedName = [Regex]::Escape($name)
+            $matchingLines = @($checksumLines | Where-Object { $_ -cmatch "^[0-9a-f]{64}  $escapedName$" })
+            if ($matchingLines.Count -ne 1) {
+              throw "SHA256SUMS.txt must contain one strict entry for $name."
+            }
+            $expectedChecksums[$name] = $matchingLines[0].Substring(0, 64)
+          }
+          foreach ($line in $checksumLines) {
+            if ($line -cnotmatch '^[0-9a-f]{64}  (.+)$' -or -not $expectedChecksums.ContainsKey($Matches[1])) {
+              throw 'SHA256SUMS.txt contains an unexpected entry.'
+            }
+          }
+          foreach ($name in @($installerName, $portableName)) {
+            $actualHash = (Get-FileHash (Join-Path $stagePath $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            Assert-Exact $actualHash $expectedChecksums[$name] "Release file SHA-256 for $name"
+          }
+
+          $notes = Get-SourceJson "contents/.github/release-notes.md?ref=$headSha"
+          Assert-Exact $notes.type 'file' 'Release notes object type'
+          Assert-Exact $notes.path '.github/release-notes.md' 'Release notes path'
+          Assert-Exact $notes.encoding 'base64' 'Release notes encoding'
+          if ([int64]$notes.size -le 0 -or [int64]$notes.size -gt 1048576) {
+            throw 'Release notes size is outside the accepted range.'
+          }
+          $notesBytes = [Convert]::FromBase64String(([string]$notes.content -replace '\s', ''))
+          if ($notesBytes.Length -ne [int64]$notes.size) {
+            throw 'Decoded release notes size did not match the Contents API response.'
+          }
+          $utf8 = [Text.UTF8Encoding]::new($false, $true)
+          $notesText = $utf8.GetString($notesBytes)
+          if ($notesText.Contains([char]0)) {
+            throw 'Release notes contain a NUL character.'
+          }
+          $firstLine = [Regex]::Split($notesText, '\r?\n', 2)[0]
+          if ($firstLine -cne "## NW Projects $tag") {
+            throw 'Release notes first line does not match the verified source tag.'
+          }
+          [IO.File]::WriteAllBytes((Join-Path $stagePath 'release-notes.md'), $notesBytes)
+
+          $artifactName = "validated-release-$version-$env:GITHUB_RUN_ID"
+          "artifact_name=$artifactName" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "tag=$tag" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "version=$version" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Transfer validated release data
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.validate.outputs.artifact_name }}
+          path: ${{ runner.temp }}/validated-release/*
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: validate-source
+    if: >-
+      ${{
+        needs.validate-source.result == 'success' &&
+        github.event_name == 'workflow_dispatch' &&
+        github.repository == 'zenyattta/nw-projects-releases' &&
+        github.actor == 'zenyattta' &&
+        github.triggering_actor == 'zenyattta' &&
+        github.ref == 'refs/heads/main' &&
+        github.ref_name == 'main' &&
+        github.event.repository.default_branch == 'main' &&
+        github.run_attempt == 1 &&
+        github.workflow_ref == 'zenyattta/nw-projects-releases/.github/workflows/publish-trusted-release.yml@refs/heads/main'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: public-release
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download validated release data
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.validate-source.outputs.artifact_name }}
+          path: ${{ runner.temp }}/publish-input
+
+      - name: Reverify and publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TAG: ${{ needs.validate-source.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.validate-source.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          $targetRepo = 'zenyattta/nw-projects-releases'
+          $apiRoot = 'https://api.github.com'
+          $expectedContext = [ordered]@{
+            GITHUB_EVENT_NAME = 'workflow_dispatch'
+            GITHUB_REPOSITORY = 'zenyattta/nw-projects-releases'
+            GITHUB_ACTOR = 'zenyattta'
+            GITHUB_TRIGGERING_ACTOR = 'zenyattta'
+            GITHUB_REF = 'refs/heads/main'
+            GITHUB_REF_NAME = 'main'
+            GITHUB_EVENT_REPOSITORY_DEFAULT_BRANCH = 'main'
+            GITHUB_RUN_ATTEMPT = '1'
+            GITHUB_WORKFLOW_REF = 'zenyattta/nw-projects-releases/.github/workflows/publish-trusted-release.yml@refs/heads/main'
+          }
+          foreach ($entry in $expectedContext.GetEnumerator()) {
+            $actual = [Environment]::GetEnvironmentVariable($entry.Key)
+            if ($actual -cne $entry.Value) {
+              throw "Untrusted publisher context: $($entry.Key) did not match."
+            }
+          }
+          if ($env:RELEASE_TAG -cnotmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+            throw 'Release tag output is not strict SemVer.'
+          }
+          if ($env:RELEASE_VERSION -cne $env:RELEASE_TAG.Substring(1)) {
+            throw 'Release version output does not match the verified tag.'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw 'The job GITHUB_TOKEN is unavailable.'
+          }
+
+          $targetHeaders = @{
+            Accept = 'application/vnd.github+json'
+            Authorization = "Bearer $env:GH_TOKEN"
+            'X-GitHub-Api-Version' = '2022-11-28'
+            'User-Agent' = 'nw-projects-releases-trusted-publisher'
+          }
+          function Get-TargetJson {
+            param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+            $uri = "$apiRoot/repos/$targetRepo"
+            if (-not [string]::IsNullOrEmpty($Path)) {
+              $uri += "/$Path"
+            }
+            Invoke-RestMethod -Method Get -Uri $uri -Headers $targetHeaders
+          }
+          function Get-TargetResponse {
+            param([Parameter(Mandatory)][string]$Path)
+            Invoke-WebRequest `
+              -Method Get `
+              -Uri "$apiRoot/repos/$targetRepo/$Path" `
+              -Headers $targetHeaders `
+              -SkipHttpErrorCheck
+          }
+          function Assert-Exact {
+            param($Actual, $Expected, [Parameter(Mandatory)][string]$Label)
+            if ([string]$Actual -cne [string]$Expected) {
+              throw "$Label did not match the trusted release contract."
+            }
+          }
+
+          $inputPath = Join-Path $env:RUNNER_TEMP 'publish-input'
+          $installerName = "NW-Projects-Setup-$env:RELEASE_VERSION-win-x64.exe"
+          $portableName = "NW-Projects-$env:RELEASE_VERSION-win-x64.exe"
+          $expectedFiles = @($installerName, $portableName, 'SHA256SUMS.txt', 'release-notes.md') | Sort-Object
+          $items = @(Get-ChildItem -LiteralPath $inputPath -Force -Recurse)
+          if ($items.Count -ne 4 -or @($items | Where-Object { $_.PSIsContainer }).Count -ne 0) {
+            throw 'Transferred release data contains an unexpected file or directory.'
+          }
+          foreach ($item in $items) {
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw 'Transferred release data contains a reparse point.'
+            }
+          }
+          $actualNames = @($items | Select-Object -ExpandProperty Name | Sort-Object)
+          if (Compare-Object $expectedFiles $actualNames) {
+            throw 'Transferred release file names do not match the release contract.'
+          }
+
+          $checksumLines = @([IO.File]::ReadAllLines((Join-Path $inputPath 'SHA256SUMS.txt')))
+          if ($checksumLines.Count -ne 2) {
+            throw 'SHA256SUMS.txt must contain exactly two entries immediately before publishing.'
+          }
+          $expectedChecksums = @{}
+          foreach ($name in @($installerName, $portableName)) {
+            $escapedName = [Regex]::Escape($name)
+            $matchingLines = @($checksumLines | Where-Object { $_ -cmatch "^[0-9a-f]{64}  $escapedName$" })
+            if ($matchingLines.Count -ne 1) {
+              throw "SHA256SUMS.txt must contain one strict entry for $name."
+            }
+            $expectedChecksums[$name] = $matchingLines[0].Substring(0, 64)
+          }
+          foreach ($line in $checksumLines) {
+            if ($line -cnotmatch '^[0-9a-f]{64}  (.+)$' -or -not $expectedChecksums.ContainsKey($Matches[1])) {
+              throw 'SHA256SUMS.txt contains an unexpected entry immediately before publishing.'
+            }
+          }
+          foreach ($name in @($installerName, $portableName)) {
+            $actualHash = (Get-FileHash (Join-Path $inputPath $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            Assert-Exact $actualHash $expectedChecksums[$name] "Release file SHA-256 for $name"
+          }
+          $notesText = [IO.File]::ReadAllText((Join-Path $inputPath 'release-notes.md'), [Text.UTF8Encoding]::new($false, $true))
+          $firstLine = [Regex]::Split($notesText, '\r?\n', 2)[0]
+          Assert-Exact $firstLine "## NW Projects $env:RELEASE_TAG" 'Release notes first line'
+
+          $repo = Get-TargetJson ''
+          Assert-Exact $repo.full_name $targetRepo 'Target repository'
+          Assert-Exact $repo.visibility 'public' 'Target repository visibility'
+          Assert-Exact $repo.default_branch 'main' 'Target default branch'
+          if ([bool]$repo.private -or [bool]$repo.archived -or [bool]$repo.disabled) {
+            throw 'Target repository must remain enabled, unarchived, and public.'
+          }
+
+          $encodedTag = [Uri]::EscapeDataString($env:RELEASE_TAG)
+          $tagCandidates = @(Get-TargetJson "git/matching-refs/tags/$encodedTag")
+          if (@($tagCandidates | Where-Object { [string]$_.ref -ceq "refs/tags/$env:RELEASE_TAG" }).Count -ne 0) {
+            throw 'The target distribution tag already exists.'
+          }
+          $targetReleases = @()
+          $releasePage = 1
+          do {
+            $releasesPage = @(Get-TargetJson "releases?per_page=100&page=$releasePage")
+            $targetReleases += $releasesPage
+            $releasePage++
+          } while ($releasesPage.Count -eq 100)
+          if (@($targetReleases | Where-Object { [string]$_.tag_name -ceq $env:RELEASE_TAG }).Count -ne 0) {
+            throw 'A published or draft target release already exists for this tag.'
+          }
+
+          $mainRef = Get-TargetJson 'git/ref/heads/main'
+          Assert-Exact $mainRef.ref 'refs/heads/main' 'Target main ref'
+          Assert-Exact $mainRef.object.type 'commit' 'Target main object type'
+          $targetMainSha = [string]$mainRef.object.sha
+          if ($targetMainSha -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'Target main ref did not resolve to a lowercase commit SHA.'
+          }
+
+          $tagCreated = $false
+          try {
+            $createBody = @{
+              ref = "refs/tags/$env:RELEASE_TAG"
+              sha = $targetMainSha
+            } | ConvertTo-Json -Compress
+            $createdRef = Invoke-RestMethod `
+              -Method Post `
+              -Uri "$apiRoot/repos/$targetRepo/git/refs" `
+              -Headers $targetHeaders `
+              -ContentType 'application/json' `
+              -Body $createBody
+            $tagCreated = $true
+            Assert-Exact $createdRef.ref "refs/tags/$env:RELEASE_TAG" 'Created target tag ref'
+            Assert-Exact $createdRef.object.type 'commit' 'Created target tag object type'
+            Assert-Exact $createdRef.object.sha $targetMainSha 'Created target tag SHA'
+
+            $verifiedRef = Get-TargetJson "git/ref/tags/$encodedTag"
+            Assert-Exact $verifiedRef.ref "refs/tags/$env:RELEASE_TAG" 'Verified target tag ref'
+            Assert-Exact $verifiedRef.object.type 'commit' 'Verified target tag object type'
+            Assert-Exact $verifiedRef.object.sha $targetMainSha 'Verified target tag SHA'
+
+            & gh release create $env:RELEASE_TAG `
+              --repo $targetRepo `
+              --verify-tag `
+              --latest `
+              --title "NW Projects $env:RELEASE_TAG" `
+              --notes-file (Join-Path $inputPath 'release-notes.md') `
+              (Join-Path $inputPath $installerName) `
+              (Join-Path $inputPath $portableName) `
+              (Join-Path $inputPath 'SHA256SUMS.txt')
+            if ($LASTEXITCODE -ne 0) {
+              throw "gh release create failed with exit code $LASTEXITCODE."
+            }
+          } catch {
+            $publishError = $_
+            if ($tagCreated) {
+              $publishedRelease = Get-TargetResponse "releases/tags/$encodedTag"
+              if ([int]$publishedRelease.StatusCode -eq 404) {
+                $deleteResponse = Invoke-WebRequest `
+                  -Method Delete `
+                  -Uri "$apiRoot/repos/$targetRepo/git/refs/tags/$encodedTag" `
+                  -Headers $targetHeaders `
+                  -SkipHttpErrorCheck
+                if ([int]$deleteResponse.StatusCode -ne 204) {
+                  throw "Publishing failed and cleanup of the newly created tag also failed with HTTP $([int]$deleteResponse.StatusCode). Original error: $publishError"
+                }
+              } elseif ([int]$publishedRelease.StatusCode -ne 200) {
+                throw "Publishing failed and release state could not be determined (HTTP $([int]$publishedRelease.StatusCode)); the newly created tag was preserved. Original error: $publishError"
+              }
+            }
+            throw $publishError
+          }

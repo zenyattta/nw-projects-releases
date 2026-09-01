@@ -1,0 +1,30 @@
+name: Validate trusted publisher
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/publish-trusted-release.yml
+      - .github/workflows/validate-trusted-publisher.yml
+      - tests/validate_trusted_publisher.py
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/publish-trusted-release.yml
+      - .github/workflows/validate-trusted-publisher.yml
+      - tests/validate_trusted_publisher.py
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install YAML parser
+        run: python -m pip install --disable-pip-version-check PyYAML==6.0.2
+      - name: Validate workflow contract
+        run: python tests/validate_trusted_publisher.py
