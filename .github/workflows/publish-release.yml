@@ -277,6 +277,11 @@ jobs:
             throw "run must have exactly one unexpired artifact named $expectedArtifactName"
           }
           $artifact = $artifacts[0]
+          if ($artifact.PSObject.Properties.Name -cnotcontains 'digest' -or
+              [string]$artifact.digest -cnotmatch '^sha256:([0-9a-fA-F]{64})\z') {
+            throw 'Actions artifact must provide a valid SHA-256 digest'
+          }
+          $expectedArtifactHash = $Matches[1].ToLowerInvariant()
 
           $workRoot = Join-Path $env:RUNNER_TEMP 'verified-publisher'
           $zipPath = Join-Path $workRoot 'source-artifact.zip'
@@ -292,14 +297,8 @@ jobs:
             -Headers $sourceHeaders `
             -OutFile $zipPath
 
-          if ($artifact.PSObject.Properties.Name -contains 'digest' -and
-              -not [string]::IsNullOrWhiteSpace([string]$artifact.digest)) {
-            if ([string]$artifact.digest -cnotmatch '^sha256:([0-9a-fA-F]{64})\z') {
-              throw 'Actions artifact digest has an unsupported format'
-            }
-            if ((Get-Sha256 $zipPath) -cne $Matches[1].ToLowerInvariant()) {
-              throw 'downloaded artifact ZIP does not match the Actions artifact digest'
-            }
+          if ((Get-Sha256 $zipPath) -cne $expectedArtifactHash) {
+            throw 'downloaded artifact ZIP does not match the Actions artifact digest'
           }
 
           Add-Type -AssemblyName System.IO.Compression
@@ -392,6 +391,15 @@ jobs:
           $notesText = $utf8.GetString($notesBytes)
           if ([string]::IsNullOrWhiteSpace($notesText) -or $notesText.Contains("`0")) {
             throw 'source release notes must be nonempty UTF-8 text without NUL bytes'
+          }
+          $expectedNotesHeading = "## NW Projects $tag"
+          $firstNotesLine = ($notesText -split '\r?\n', 2)[0]
+          if (-not [string]::Equals(
+              $firstNotesLine,
+              $expectedNotesHeading,
+              [StringComparison]::Ordinal
+          )) {
+            throw "source release notes must start with exactly: $expectedNotesHeading"
           }
           [IO.File]::WriteAllText(
             (Join-Path $workRoot 'release-notes.md'),
