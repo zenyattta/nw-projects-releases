@@ -374,7 +374,7 @@ jobs:
             [Uri]::EscapeDataString($_)
           }) -join '/'
           $notes = Invoke-SourceJson `
-            "$apiBase/repos/$sourceRepository/contents/$encodedNotesPath?ref=$($run.head_sha)"
+            "$apiBase/repos/$sourceRepository/contents/${encodedNotesPath}?ref=$($run.head_sha)"
           if ($notes.type -cne 'file' -or
               $notes.path -cne $releaseNotesPath -or
               $notes.encoding -cne 'base64' -or
@@ -586,7 +586,7 @@ jobs:
             $path = Join-Path $assetRoot $name
             $uploaded = Invoke-RestMethod `
               -Method Post `
-              -Uri "$uploadBase?name=$([Uri]::EscapeDataString($name))" `
+              -Uri "${uploadBase}?name=$([Uri]::EscapeDataString($name))" `
               -Headers $headers `
               -ContentType 'application/octet-stream' `
               -InFile $path
