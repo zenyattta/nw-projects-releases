@@ -6,7 +6,7 @@ This repository contains release metadata and Windows release assets only. Appli
 
 ## Publisher contract
 
-Releases are published manually by `.github/workflows/publish-release.yml` from this repository's trusted `main` branch. The publisher accepts a source tag and source Actions run ID, then verifies the private `zenyattta/nw-projects` run, annotated tag, current `master` commit, artifact digest, archive shape, and binary checksums before creating a draft Release.
+Releases are published manually by `.github/workflows/publish-release.yml` from this repository's trusted `main` branch. The publisher accepts a source tag and source Actions run ID, then verifies the private `zenyattta/nw-projects` run, annotated tag, current `master` commit, required artifact digest, archive shape, and binary checksums before creating a draft Release.
 
 The source workflow must be named `Build Windows release` at `.github/workflows/release.yml`. A successful, first-attempt `push` run for annotated tag `vX.Y.Z` must upload exactly one unexpired artifact named `NW-Projects-X.Y.Z-win-x64`. Its ZIP must contain exactly:
 
@@ -14,7 +14,7 @@ The source workflow must be named `Build Windows release` at `.github/workflows/
 - `NW-Projects-X.Y.Z-win-x64.exe`
 - `SHA256SUMS.txt`
 
-Release notes are read from `.github/release-notes.md` at the verified source commit. The source workflow must not hold credentials for this repository.
+Release notes are read from `.github/release-notes.md` at the verified source commit. The file must be nonempty UTF-8 text whose first line is exactly `## NW Projects vX.Y.Z` for the verified source tag. The source workflow must not hold credentials for this repository.
 
 ## Required configuration
 
