@@ -49,8 +49,13 @@ jobs:
             'X-GitHub-Api-Version' = '2022-11-28'
           }
 
-          function Invoke-GitHubJson([string]$Uri) {
-            Invoke-RestMethod -Method Get -Uri $Uri -Headers $headers
+          function Invoke-GitHubJson([string]$Uri, [switch]$PreserveArray) {
+            $response = Invoke-RestMethod -Method Get -Uri $Uri -Headers $headers
+            if ($PreserveArray) {
+              Write-Output -NoEnumerate $response
+            } else {
+              $response
+            }
           }
 
           function Assert-NotFound([string]$Uri, [string]$Description) {
@@ -64,6 +69,30 @@ jobs:
               throw
             }
             throw "$Description already exists"
+          }
+
+          function Assert-NoReleaseCollision([object]$Response, [string]$Tag) {
+            if ($Response -isnot [array] -or $Response.Count -gt 100) {
+              throw 'GitHub returned an unexpected Releases API response'
+            }
+            $releases = [object[]]$Response
+            foreach ($release in $releases) {
+              $tagName = $release.PSObject.Properties['tag_name']
+              if ($release -isnot [pscustomobject] -or
+                  $null -eq $tagName -or
+                  $tagName.Value -isnot [string] -or
+                  [string]::IsNullOrWhiteSpace($tagName.Value)) {
+                throw 'GitHub returned a malformed Release entry'
+              }
+              if ([string]::Equals(
+                  $tagName.Value,
+                  $Tag,
+                  [StringComparison]::Ordinal
+              )) {
+                throw "destination Release $Tag already exists"
+              }
+            }
+            $releases.Count
           }
 
           if ($env:GITHUB_EVENT_NAME -cne 'workflow_dispatch') {
@@ -124,12 +153,12 @@ jobs:
 
           $page = 1
           do {
-            $releases = @(Invoke-GitHubJson "$apiBase/repos/$destinationRepository/releases?per_page=100&page=$page")
-            if (@($releases | Where-Object { $_.tag_name -ceq $tag }).Count -ne 0) {
-              throw "destination Release $tag already exists"
-            }
+            $releaseResponse = Invoke-GitHubJson `
+              "$apiBase/repos/$destinationRepository/releases?per_page=100&page=$page" `
+              -PreserveArray
+            $releaseCount = Assert-NoReleaseCollision $releaseResponse $tag
             $page++
-          } while ($releases.Count -eq 100)
+          } while ($releaseCount -eq 100)
 
           "PUBLISH_TAG=$tag" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "PUBLISH_VERSION=$version" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
@@ -438,7 +467,8 @@ jobs:
           function Invoke-GitHubJson(
             [ValidateSet('Get', 'Post', 'Patch')][string]$Method,
             [string]$Uri,
-            [object]$Body
+            [object]$Body,
+            [switch]$PreserveArray
           ) {
             $parameters = @{
               Method = $Method
@@ -449,7 +479,12 @@ jobs:
               $parameters.Body = $Body | ConvertTo-Json -Depth 10 -Compress
               $parameters.ContentType = 'application/json'
             }
-            Invoke-RestMethod @parameters
+            $response = Invoke-RestMethod @parameters
+            if ($PreserveArray) {
+              Write-Output -NoEnumerate $response
+            } else {
+              $response
+            }
           }
 
           function Assert-NotFound([string]$Uri, [string]$Description) {
@@ -463,6 +498,30 @@ jobs:
               throw
             }
             throw "$Description already exists"
+          }
+
+          function Assert-NoReleaseCollision([object]$Response, [string]$Tag) {
+            if ($Response -isnot [array] -or $Response.Count -gt 100) {
+              throw 'GitHub returned an unexpected Releases API response'
+            }
+            $releases = [object[]]$Response
+            foreach ($release in $releases) {
+              $tagName = $release.PSObject.Properties['tag_name']
+              if ($release -isnot [pscustomobject] -or
+                  $null -eq $tagName -or
+                  $tagName.Value -isnot [string] -or
+                  [string]::IsNullOrWhiteSpace($tagName.Value)) {
+                throw 'GitHub returned a malformed Release entry'
+              }
+              if ([string]::Equals(
+                  $tagName.Value,
+                  $Tag,
+                  [StringComparison]::Ordinal
+              )) {
+                throw "destination Release $Tag already exists"
+              }
+            }
+            $releases.Count
           }
 
           function Get-Sha256([string]$Path) {
@@ -536,14 +595,13 @@ jobs:
             "destination tag $tag"
           $page = 1
           do {
-            $releases = @(Invoke-GitHubJson Get `
+            $releaseResponse = Invoke-GitHubJson Get `
               "$apiBase/repos/$destinationRepository/releases?per_page=100&page=$page" `
-              $null)
-            if (@($releases | Where-Object { $_.tag_name -ceq $tag }).Count -ne 0) {
-              throw "destination Release $tag already exists"
-            }
+              $null `
+              -PreserveArray
+            $releaseCount = Assert-NoReleaseCollision $releaseResponse $tag
             $page++
-          } while ($releases.Count -eq 100)
+          } while ($releaseCount -eq 100)
 
           # GitHub has no documented preflight API for the repository immutability setting.
           $tagObject = Invoke-GitHubJson Post `
